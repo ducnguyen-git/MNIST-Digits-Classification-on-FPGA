@@ -1,0 +1,89 @@
+`timescale 1ns / 1ps
+
+module tb_fc_layer;
+    parameter IN_SIZE = 75;
+    parameter OUT_SIZE = 10;
+    parameter DATA_WIDTH = 16;
+
+    reg clk = 0;
+    reg reset_n = 0;
+    reg start_fc = 0;
+    reg data_valid = 0;
+
+    reg signed [DATA_WIDTH - 1 : 0] map_in_serial;
+    reg signed [DATA_WIDTH - 1 : 0] weight_serial;
+    reg signed [DATA_WIDTH - 1 : 0]	bias_serial;
+
+    wire signed [DATA_WIDTH - 1 : 0] predict_out;
+    wire finish_fc;
+    wire predict_out_valid;
+
+	 // RAMs Instantiate
+    reg signed [DATA_WIDTH - 1 : 0] map_in_ram [0 : IN_SIZE - 1];
+    reg signed [DATA_WIDTH - 1 : 0] weights_ram [0 : IN_SIZE * OUT_SIZE - 1];
+    reg signed [DATA_WIDTH - 1 : 0] biases_ram [0 : OUT_SIZE - 1];
+
+    integer i;
+
+    // Clock
+    always #5 clk = ~clk;
+
+    fc_layer fc (
+			.clk(clk),
+      .reset_n(reset_n),
+      .start_fc(start_fc),
+      .data_valid(data_valid),
+
+      // Serial input
+      .map_in_serial(map_in_serial),
+      .weight_serial(weight_serial),
+      .bias_serial(bias_serial),
+
+      // Output
+      .finish_fc(finish_fc),
+      .predict_out(predict_out),
+      .predict_out_valid(predict_out_valid)
+			);
+
+    initial begin
+        // Reset
+        reset_n = 0;
+        #10 reset_n = 1;
+
+        // Load image, weights, biases
+        $readmemh("C:/Users/Acer/Downloads/CNN-FPGA-Implementation-main/src/IntelHEX/wb16/img_in_for_fc_16bit.hex", map_in_ram);
+        $readmemh("C:/Users/Acer/Downloads/CNN-FPGA-Implementation-main/src/IntelHEX/wb16/fc_weight_16.hex", weights_ram);
+        $readmemh("C:/Users/Acer/Downloads/CNN-FPGA-Implementation-main/src/IntelHEX/wb16/fc_bias_16.hex", biases_ram);
+
+        // Trigger dense
+        #20 start_fc = 1;
+        #20 start_fc = 0;
+        
+        // Pack into buses
+        for (i = 0; i < IN_SIZE; i = i + 1) begin
+            @(posedge clk);
+            data_valid <= 1;
+            map_in_serial <= map_in_ram[i];
+        end
+
+        for (i = 0; i < IN_SIZE*OUT_SIZE; i = i + 1) begin
+            @(posedge clk);
+            data_valid <= 1;
+            weight_serial <= weights_ram[i];
+        end
+
+        for (i = 0; i < OUT_SIZE; i = i + 1) begin
+            @(posedge clk);
+            data_valid <= 1;
+            bias_serial <= biases_ram[i];
+        end
+        
+        @(posedge clk);
+        data_valid <= 0;
+        
+        // Wait for completion
+        wait (finish_fc);
+        #50 $stop;
+    end
+endmodule
+

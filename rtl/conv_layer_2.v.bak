@@ -1,0 +1,188 @@
+`timescale 1ns / 1ps
+
+module conv_layer_2 #(
+    parameter IN_CHANNELS = 2,   // Input channel number
+    parameter OUT_CHANNELS = 3,	// Output channel number
+    parameter IN_IMG_SIZE = 12,	// Input image size
+	 parameter OUT_IMG_SIZE = 10,	// Output image size
+    parameter KERNEL_SIZE = 3,	// Kernel size
+    parameter DATA_WIDTH = 16,	// 32-bit width
+    parameter SUM_WIDTH = DATA_WIDTH * 2 + 8,	// Sum result width
+	 parameter PRODUCT_WIDTH = DATA_WIDTH * 2
+)(
+    input wire clk,	// Clock
+    input wire reset_n,	// Low reset
+    input wire start_conv2,	// Start signal 
+    input wire data_valid,
+    input wire signed [DATA_WIDTH - 1 : 0] partial_image_in,	// Linear image value
+    input wire signed [DATA_WIDTH - 1 : 0] partial_weights_in,	// Linear weights value
+    input wire signed [DATA_WIDTH - 1 : 0] partial_biases_in,	// Linear biases linear
+    output reg finish_conv2,	// Finish signal
+    output reg signed [DATA_WIDTH - 1 : 0] map,	// Linear feature map
+	 output reg result_valid
+);
+	// Total size parameters
+	localparam TOTAL_IMG_SIZE = IN_CHANNELS * IN_IMG_SIZE * IN_IMG_SIZE; // 288
+	localparam TOTAL_WEIGHTS_SIZE = IN_CHANNELS * OUT_CHANNELS * KERNEL_SIZE * KERNEL_SIZE; // 54
+	localparam TOTAL_BIASES_SIZE = OUT_CHANNELS; // 3
+	localparam TOTAL_MAP_SIZE = OUT_CHANNELS * OUT_IMG_SIZE * OUT_IMG_SIZE; // 300
+	
+	// ROMs and Indexes
+    (* ramstyle="M4K" *) reg signed [DATA_WIDTH - 1 : 0] image_ram 		[0 : TOTAL_IMG_SIZE - 1];	// Vector image
+    reg [8:0] load_image_idx;
+    (* ramstyle="M4K" *) reg signed [DATA_WIDTH - 1 : 0] weights_ram  	[0 : TOTAL_WEIGHTS_SIZE - 1];	// Vector weights
+    reg [5:0] load_weights_idx;
+    (* ramstyle="M4K" *) reg signed [DATA_WIDTH - 1 : 0] biases_ram   	[0 : TOTAL_BIASES_SIZE - 1];	// Vector biases
+    reg [1:0] load_biases_idx;
+	 
+	 // No need synthesis
+	 reg signed [DATA_WIDTH - 1 : 0] featmap_ram   	[0 : TOTAL_MAP_SIZE - 1];	// Vector biases
+	 //====================
+    reg [8:0] load_map_idx;
+
+	// Convolutional Algorithm
+	localparam 	IDLE = 0,  
+					LOAD = 1,
+					COMPUTE = 2,
+					DONE = 3;
+	reg [2:0] state, next_state;
+			
+	// FSM Control
+	always @(posedge clk or negedge reset_n) begin
+        if (!reset_n) state <= IDLE;
+        else state <= next_state;
+  end
+    
+  // FSM transitions
+  always @(*) begin
+      case (state)
+          IDLE: next_state = start_conv2 ? LOAD : IDLE;
+          LOAD: next_state = (load_image_idx == TOTAL_IMG_SIZE && load_weights_idx == TOTAL_WEIGHTS_SIZE && load_biases_idx == TOTAL_BIASES_SIZE) ? COMPUTE : LOAD;
+          COMPUTE: next_state = (load_map_idx == TOTAL_MAP_SIZE) ? DONE : COMPUTE;
+          DONE: next_state = IDLE;
+      endcase
+  end
+
+  // ---------- pipeline registers ----------
+  integer row, col;					// Row and Column of image
+	integer channel, filter;			// Channel and filter number
+	integer ker_row, ker_col; 		// Row and Column of kernel
+  reg  signed [DATA_WIDTH - 1 : 0] pix_r, wgt_r;   // stage-1
+  wire signed [PRODUCT_WIDTH - 1 : 0] prod_r;      // stage-2 (32 = 16+16)
+  reg  signed [SUM_WIDTH - 1 : 0]  acc_r;          // stage-3 (enough for 75 terms)
+  wire signed [SUM_WIDTH - 1 : 0] acc_shift;
+	
+	// hard multiplier ? Cyclone II DSP block
+  (* altera_attribute = "-name MULTSTYLE=EMBEDDED_MULT" *)
+  assign prod_r = pix_r * wgt_r;
+  assign acc_shift = (acc_r >>> 13);
+	
+	always @(posedge clk or negedge reset_n) begin
+        if (!reset_n) begin
+        load_image_idx <= 10'b0;
+			  load_weights_idx <= 6'b0;
+			  load_biases_idx <= 1'b0;
+			  load_map_idx <= 11'b0;
+			  row <= 0; col <= 0;
+			  pix_r <= 0; wgt_r <= 0; acc_r <= 0; 
+			  ker_row <= 0; ker_col <= 0;
+			  channel <= 0; filter <= 0;
+        finish_conv2 <= 0;
+        result_valid <= 0;
+        map <= 16'b0; 
+		  
+        end else begin
+            case (state)
+                IDLE: begin
+                    finish_conv2 <= 0;
+                    result_valid <= 1'b0;
+                end
+					 
+                LOAD: begin
+                    if (data_valid) begin
+                        if (load_image_idx < TOTAL_IMG_SIZE) begin
+                            image_ram[load_image_idx] <= partial_image_in;
+                            load_image_idx <= load_image_idx + 10'b1;
+								end else if (load_weights_idx < TOTAL_WEIGHTS_SIZE) begin
+                            weights_ram[load_weights_idx] <= partial_weights_in;
+                            load_weights_idx <= load_weights_idx + 6'b1;
+								end else if (load_biases_idx < TOTAL_BIASES_SIZE) begin
+                            biases_ram[load_biases_idx] <= partial_biases_in;
+                            load_biases_idx <= load_biases_idx + 1'b1;
+								end
+                    end
+                end
+					 
+                COMPUTE: begin
+							     //------------------------------------------------------------------
+              	    //stage-0 :   fetch addresses
+                   //------------------------------------------------------------------
+                    pix_r <= image_ram[channel*IN_IMG_SIZE*IN_IMG_SIZE
+                                        + (row+ker_row)*IN_IMG_SIZE + (col+ker_col)];
+                    wgt_r <= weights_ram[filter*IN_CHANNELS*KERNEL_SIZE*KERNEL_SIZE
+                                          + channel*KERNEL_SIZE*KERNEL_SIZE
+                                          + ker_row*KERNEL_SIZE + ker_col];
+
+                    //------------------------------------------------------------------
+                    // stage-1 :   accumulate
+                    //------------------------------------------------------------------
+                    if (channel == 0 && ker_row == 0 && ker_col == 0)
+                      acc_r <= 40'sd0;
+                    acc_r <= acc_r + {{8{prod_r[31]}}, prod_r};  // sign-extend to 36 bits                    //------------------------------------------------------------------
+                    // window / loop control
+                    //------------------------------------------------------------------
+                    if (col>0) result_valid <= 1'b1;
+						  if (ker_col < KERNEL_SIZE-1)  ker_col <= ker_col + 1;
+                    else begin
+                      ker_col <= 0;
+                      if (ker_row < KERNEL_SIZE-1) ker_row <= ker_row + 1;
+                      else begin
+                        ker_row <= 0;
+                        if (channel < IN_CHANNELS-1) channel <= channel + 1;
+                        else begin
+                          // ------- MACs complete for one output pixel -------
+                          channel <= 0;
+
+                          // bias + ReLU + quantise
+                          acc_r <= acc_r + biases_ram[filter];
+                          if (acc_r[39]) acc_r <= 40'd0;          // ReLU
+                          map <= acc_shift[DATA_WIDTH-1:0];
+                          // result_valid <= 1'b1;
+                          // store result, advance col,row,filter
+								  // No need synthesis
+                          if (result_valid) begin
+                            featmap_ram[load_map_idx] <= map;
+                            load_map_idx <= load_map_idx + 1;
+                          end
+								  //===================
+                          if (col < OUT_IMG_SIZE-1) begin
+										result_valid <= 1'b0;
+										col <= col + 1;
+								  end
+                          else begin
+                            col <= 0;
+                            if (row < OUT_IMG_SIZE-1) row <= row + 1;
+                            else begin
+                              row <= 0;
+                              if (filter < OUT_CHANNELS-1) filter <= filter + 1;
+                              else begin
+                                state <= DONE;              // layer finished
+                              end
+                            end
+                          end
+                        end
+                      end
+                    end
+                end
+					      
+                DONE: begin
+						  // No need synthesis
+						  featmap_ram[load_map_idx] <= map;
+                    load_map_idx <= load_map_idx + 1;
+						  //===================
+                    finish_conv2 <= 1;
+                end
+            endcase
+        end
+    end
+endmodule

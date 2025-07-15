@@ -1,0 +1,54 @@
+`timescale 1ns / 1ps
+
+module tb_argmax_layer;
+    parameter IN_SIZE = 10;
+    parameter DATA_WIDTH = 16;
+
+	  reg clk = 0;
+    reg reset_n = 0;
+    reg start_argmax = 0;
+    reg data_valid = 0;
+	 
+    reg signed [DATA_WIDTH - 1 : 0] input_data;
+	  wire finish_argmax;
+    wire [3:0] index_out;
+	 
+	// Clock generation
+    always #5 clk = ~clk;
+
+    // DUT
+    argmax_layer arg (
+			.clk(clk),
+			.reset_n(reset_n),
+			.start_argmax(start_argmax),
+			.data_valid(data_valid),
+      .class_in(input_data),
+		  .finish_argmax(finish_argmax),
+      .index_out(index_out)
+    );
+  
+    integer i;
+
+    initial begin
+			// Reset
+		  reset_n = 0;
+      #10 reset_n = 1;
+		  
+		  #20 start_argmax = 1;
+		  #10 start_argmax = 0;
+		  
+      // Send image data
+      for (i = 0; i < IN_SIZE; i = i + 1) begin
+          @(posedge clk);
+          data_valid <= 1;
+          input_data <= $signed($urandom_range(0, 16383)) - 8192;
+      end
+      
+      #10 data_valid <= 0;
+      
+			wait(finish_argmax);
+			#30 $stop;
+    end
+
+endmodule
+

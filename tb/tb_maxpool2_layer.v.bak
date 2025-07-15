@@ -1,0 +1,59 @@
+`timescale 1ns / 1ps
+
+module tb_maxpool2_layer;
+    parameter IMG_WIDTH = 24;
+    parameter IMG_HEIGHT = 24;
+    parameter CHANNELS = 2;
+    parameter POOL_SIZE = 2;
+    parameter DATA_WIDTH = 32;
+
+    reg clk = 0;
+    reg reset_n = 0;
+    reg start_max2 = 0;
+    reg signed [DATA_WIDTH - 1 : 0] data_in;
+    wire signed [DATA_WIDTH - 1 : 0] data_out;
+    wire finish_max2;
+
+    reg [31:0] seed;
+    integer i;
+
+    // Clock generation
+    always #5 clk = ~clk;
+
+    // DUT
+    maxpool_layer_2 maxrelu2 (
+        .clk(clk),
+        .reset_n(reset_n),
+        .start_max2(start_max2),
+        .data_in(data_in),
+        .finish_max2(finish_max2),
+        .data_out(data_out)
+    );
+
+    reg [15:0] input_count;
+
+    always @(posedge clk or negedge reset_n) begin
+      if (!reset_n) begin
+        data_in <= 0;
+        input_count <= 0;
+      end else if (start_max2 && input_count < (IMG_WIDTH * IMG_HEIGHT * CHANNELS)) begin
+        data_in <= $random(seed) % 69732;
+        input_count <= input_count + 1;
+      end
+    end
+
+
+    initial begin
+        // Reset 
+        reset_n = 0;
+        #10 reset_n = 1;
+        
+        // Start 
+        start_max2 = 1;
+        
+        // Wait for finish
+        wait (finish_max2);
+        #10 start_max2 = 0;
+    end
+endmodule
+

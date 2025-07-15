@@ -1,0 +1,142 @@
+`timescale 1ns / 1ps
+
+module tb_cnn_top;
+    parameter DATA_WIDTH = 16;
+  
+    reg clk = 0;
+    reg reset_n = 0;
+    reg start = 0;
+    reg data_valid = 0;
+    reg [DATA_WIDTH - 1 : 0] image_in;
+    reg [DATA_WIDTH - 1 : 0] weights_conv1_in;
+    reg [DATA_WIDTH - 1 : 0] biases_conv1_in;
+    reg [DATA_WIDTH - 1 : 0] weights_conv2_in;
+    reg [DATA_WIDTH - 1 : 0] biases_conv2_in;
+    reg [DATA_WIDTH - 1 : 0] weights_fc_in;
+    reg [DATA_WIDTH - 1 : 0] biases_fc_in;
+    wire signed [3:0] class_out;
+    wire finish;
+
+    integer i;
+
+    // Clock generation
+    always #5 clk = ~clk;
+
+    // DUT
+    cnn_top top_cnn (
+        .clk(clk),
+        .reset_n(reset_n),
+        .start(start),
+        .data_valid(data_valid),
+        .img_data_in(image_in),
+        .weights_conv1_in(weights_conv1_in),
+        .biases_conv1_in(biases_conv1_in),
+        .weights_conv2_in(weights_conv2_in),
+        .biases_conv2_in(biases_conv2_in),
+        .weights_fc_in(weights_fc_in),
+        .biases_fc_in(biases_fc_in),
+        .finish(finish),
+        .class_out(class_out)
+    );
+    
+    // RAMs Instantiate
+    reg signed [DATA_WIDTH - 1 : 0] img_ram [0 : 783];
+    reg signed [DATA_WIDTH - 1 : 0] conv1_weight_ram [0 : 49];
+    reg signed [DATA_WIDTH - 1 : 0] conv1_bias_ram [0 : 1];
+    reg signed [DATA_WIDTH - 1 : 0] conv2_weight_ram [0 : 53];
+    reg signed [DATA_WIDTH - 1 : 0] conv2_bias_ram [0 : 2];
+    reg signed [DATA_WIDTH - 1 : 0] fc_weight_ram [0 : 749];
+    reg signed [DATA_WIDTH - 1 : 0] fc_bias_ram [0 : 9];
+    
+    initial begin
+        // Reset 
+        reset_n = 0;
+        #10 reset_n = 1;
+        
+        $readmemh("C:/Users/Acer/Downloads/CNN-FPGA-Implementation-main/src/IntelHEX/wb16/num3.hex", img_ram);
+        $readmemh("C:/Users/Acer/Downloads/CNN-FPGA-Implementation-main/src/IntelHEX/wb16/conv1_weight_16.hex", conv1_weight_ram);
+        $readmemh("C:/Users/Acer/Downloads/CNN-FPGA-Implementation-main/src/IntelHEX/wb16/conv1_bias_16.hex", conv1_bias_ram);
+        $readmemh("C:/Users/Acer/Downloads/CNN-FPGA-Implementation-main/src/IntelHEX/wb16/conv2_weight_16.hex", conv2_weight_ram);
+        $readmemh("C:/Users/Acer/Downloads/CNN-FPGA-Implementation-main/src/IntelHEX/wb16/conv2_bias_16.hex", conv2_bias_ram);
+        $readmemh("C:/Users/Acer/Downloads/CNN-FPGA-Implementation-main/src/IntelHEX/wb16/fc_weight_16.hex", fc_weight_ram);
+        $readmemh("C:/Users/Acer/Downloads/CNN-FPGA-Implementation-main/src/IntelHEX/wb16/fc_bias_16.hex", fc_bias_ram);
+        
+        // Start 
+        #10 start = 1;
+        #10 start = 0;
+        #10;
+        // Send image data
+        for (i = 0; i < 784; i = i + 1) begin
+            @(posedge clk);
+            data_valid <= 1;
+            image_in <= img_ram[i];
+        end
+        
+        @(posedge clk);
+        data_valid <= 0;
+        
+        // Send weights conv1
+        for (i = 0; i < 50; i = i + 1) begin
+            @(posedge clk);
+            data_valid <= 1;
+            weights_conv1_in <= conv1_weight_ram[i];
+        end
+        
+        @(posedge clk);
+        data_valid <= 0;
+        
+        // Send biases conv1
+        for (i = 0; i < 2; i = i + 1) begin
+            @(posedge clk);
+            data_valid <= 1;
+            biases_conv1_in <= conv1_bias_ram[i];
+        end
+        
+        wait(top_cnn.max1.finish_max1);
+        data_valid <= 0;
+        
+        // Send weights conv2
+        for (i = 0; i < 54; i = i + 1) begin
+            @(posedge clk);
+            data_valid <= 1;
+            weights_conv2_in = conv2_weight_ram[i];
+        end
+        
+        data_valid <= 0;
+        
+        // Send biases conv2
+        for (i = 0; i < 3; i = i + 1) begin
+            @(posedge clk);
+            data_valid <= 1;
+            biases_conv2_in = conv2_bias_ram[i];
+        end
+        
+        wait(top_cnn.max2.finish_max2);
+        data_valid <= 0;
+        
+        // Send weights fc
+        for (i = 0; i < 750; i = i + 1) begin
+            @(posedge clk);
+            data_valid <= 1;
+            weights_fc_in = fc_weight_ram[i];
+        end
+        
+        data_valid <= 0;
+        
+        // Send biases fc
+        for (i = 0; i < 10; i = i + 1) begin
+            @(posedge clk);
+            data_valid <= 1;
+            biases_fc_in = fc_bias_ram[i];
+        end
+		    
+		    @(posedge clk);
+        data_valid <= 0;
+        
+        // Wait for finish
+        wait (finish);
+        #1000 $finish;
+    end
+
+endmodule
+
